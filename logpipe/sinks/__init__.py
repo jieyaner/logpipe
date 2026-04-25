@@ -1,18 +1,34 @@
-"""Sink implementations for logpipe.
+"""Sink base class and registry helpers."""
 
-A *sink* is any object that exposes:
+from __future__ import annotations
 
-    write(record: dict) -> None
-    flush() -> None
+from abc import ABC, abstractmethod
+from typing import Dict, Type
 
-Sinks receive fully-parsed log records (dicts) from the pipeline and are
-responsible for delivering them to an external destination.
 
-Available sinks
----------------
-- S3Sink  – buffers records and uploads gzipped NDJSON batches to Amazon S3.
-"""
+class BaseSink(ABC):
+    """All sinks must implement this interface."""
 
-from logpipe.sinks.s3_sink import S3Sink
+    @abstractmethod
+    def write(self, record: dict) -> None:
+        """Accept a single parsed log record."""
 
-__all__ = ["S3Sink"]
+    def flush(self) -> None:  # noqa: B027
+        """Flush any buffered records to the backing store."""
+
+    def close(self) -> None:  # noqa: B027
+        """Release resources held by the sink."""
+
+
+_REGISTRY: Dict[str, Type[BaseSink]] = {}
+
+
+def register(name: str, cls: Type[BaseSink]) -> None:
+    _REGISTRY[name] = cls
+
+
+def get(name: str) -> Type[BaseSink]:
+    try:
+        return _REGISTRY[name]
+    except KeyError:
+        raise KeyError(f"Unknown sink type: {name!r}") from None
