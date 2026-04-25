@@ -1,34 +1,35 @@
-"""Sink base class and registry helpers."""
+"""Base sink interface and sink registry for logpipe."""
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
-from typing import Dict, Type
+from typing import Any, Callable, Dict, Optional
 
 
-class BaseSink(ABC):
-    """All sinks must implement this interface."""
+class BaseSink:
+    """Abstract base class for all sinks."""
 
-    @abstractmethod
-    def write(self, record: dict) -> None:
-        """Accept a single parsed log record."""
+    def write(self, record: Dict[str, Any]) -> None:
+        raise NotImplementedError
 
-    def flush(self) -> None:  # noqa: B027
-        """Flush any buffered records to the backing store."""
+    def flush(self) -> None:
+        pass
 
-    def close(self) -> None:  # noqa: B027
-        """Release resources held by the sink."""
-
-
-_REGISTRY: Dict[str, Type[BaseSink]] = {}
+    def close(self) -> None:
+        pass
 
 
-def register(name: str, cls: Type[BaseSink]) -> None:
-    _REGISTRY[name] = cls
+# ---------------------------------------------------------------------------
+# Registry
+# ---------------------------------------------------------------------------
+
+_REGISTRY: Dict[str, Callable[..., BaseSink]] = {}
 
 
-def get(name: str) -> Type[BaseSink]:
-    try:
-        return _REGISTRY[name]
-    except KeyError:
-        raise KeyError(f"Unknown sink type: {name!r}") from None
+def register(name: str, factory: Callable[..., BaseSink]) -> None:
+    """Register a sink factory under *name*."""
+    _REGISTRY[name] = factory
+
+
+def get(name: str) -> Optional[Callable[..., BaseSink]]:
+    """Return the factory registered under *name*, or ``None``."""
+    return _REGISTRY.get(name)
