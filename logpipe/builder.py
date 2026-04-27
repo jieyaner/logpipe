@@ -1,24 +1,21 @@
-"""Pipeline builder — constructs a :class:`~logpipe.pipeline.Pipeline` from a
-plain-Python configuration dictionary.
-
-Supported sink types (``type`` key):
-  s3, elasticsearch, metrics, throttled, filtered, retry, fanout, buffer,
-  transform, sampling, dedup, rotating, **schema**
-"""
+"""Factory helpers that construct pipeline components from config dicts."""
 
 from __future__ import annotations
 
-from typing import Any, Dict
+import importlib
+from typing import Any
 
-from logpipe.parser import JSONParser, RegexParser, PlainParser
 from logpipe.pipeline import Pipeline
-from logpipe.router import Router, Route
-from logpipe.tailer import FileTailer
+from logpipe.router import Route, Router
 from logpipe.checkpoint import CheckpointManager
+from logpipe.tailer import FileTailer
 
 
-def _build_sink(cfg: Dict[str, Any]):
-    """Recursively construct a sink from *cfg*."""
+# ---------------------------------------------------------------------------
+# Sink builders
+# ---------------------------------------------------------------------------
+
+def _build_sink(cfg: dict[str, Any]):
     kind = cfg["type"]
 
     if kind == "s3":
@@ -35,102 +32,136 @@ def _build_sink(cfg: Dict[str, Any]):
         return ElasticsearchSink(
             host=cfg["host"],
             index=cfg["index"],
-            batch_size=cfg.get("batch_size", 500),
+            timeout=cfg.get("timeout", 10),
         )
-
-    if kind == "metrics":
-        from logpipe.metrics import MetricsCollector
-        from logpipe.sinks.metrics_sink import MetricsSink
-        return MetricsSink(MetricsCollector(), _build_sink(cfg["sink"]))
-
-    if kind == "throttled":
-        from logpipe.sinks.throttled_sink import ThrottledSink
-        return ThrottledSink(
-            _build_sink(cfg["sink"]),
-            rate=cfg["rate"],
-            capacity=cfg.get("capacity", cfg["rate"]),
-        )
-
-    if kind == "filtered":
-        from logpipe.filter import FieldFilter
-        from logpipe.sinks.filtered_sink import FilteredSink
-        flt = FieldFilter(cfg["field"], cfg["op"], cfg.get("value"))
-        return FilteredSink(_build_sink(cfg["sink"]), flt)
-
-    if kind == "retry":
-        from logpipe.sinks.retry_sink import RetrySink
-        return RetrySink(_build_sink(cfg["sink"]), max_attempts=cfg.get("max_attempts", 3))
 
     if kind == "fanout":
-        return __import__("logpipe.sinks.fanout_sink", fromlist=["FanoutSink"]).FanoutSink(
-            [_build_sink(s) for s in cfg["sinks"]]
-        )
+        from logpipe.sinks.fanout_sink import FanoutSink
+        children = [_build_sink(c) for c in cfg["sinks"]]
+        return FanoutSink(children)
+
+    if kind == "tee":
+        from logpipe.sinks.tee_sink import TeeSink
+        primary = _build_sink(cfg["primary"])
+        tap = _build_sink(cfg["tap"])
+        return TeeSink(primary, tap, silent_tap=cfg.get("silent_tap", True))
 
     if kind == "buffer":
         from logpipe.sinks.buffer_sink import BufferedSink
-        return BufferedSink(_build_sink(cfg["sink"]), max_size=cfg.get("max_size", 100))
+        inner = _build_sink(cfg["sink"])
+        return BufferedSink(inner, max_size=cfg.get("max_size", 100))
+
+    if kind == "retry":
+        from logpipe.sinks.retry_sink import RetrySink
+        inner = _build_sink(cfg["sink"])
+        return RetrySink(inner, max_attempts=cfg.get("max_attempts", 3))
+
+    if kind == "filtered":
+        from logpipe.sinks.filtered_sink import FilteredSink
+        from logpipe.filter import FieldFilter
+        inner = _build_sink(cfg["sink"])
+        flt = FieldFilter(cfg["field"], cfg["op"], cfg.get("value"))
+        return FilteredSink(inner, flt)
 
     if kind == "transform":
-        from logpipe.transform import FieldTransformer
         from logpipe.sinks.transform_sink import TransformSink
-        return TransformSink(_build_sink(cfg["sink"]), FieldTransformer(cfg["ops"]))
+        from logpipe.transform import FieldTransformer
+        inner = _build_sink(cfg["sink"])
+        transformer = FieldTransformer(cfg["rules"])
+        return TransformSink(inner, transformer)
 
     if kind == "sampling":
         from logpipe.sinks.sampling_sink import SamplingSink
-        return SamplingSink(_build_sink(cfg["sink"]), rate=cfg["rate"])
+        inner = _build_sink(cfg["sink"])
+        return SamplingSink(inner, rate=cfg.get("rate", 1.0))
 
     if kind == "dedup":
         from logpipe.sinks.dedup_sink import DedupSink
-        return DedupSink(_build_sink(cfg["sink"]), fields=cfg["fields"], ttl=cfg.get("ttl", 60))
-
-    if kind == "rotating":
-        from logpipe.sinks.rotating_sink import RotatingSink
-        return RotatingSink(_build_sink(cfg["sink"]), max_records=cfg.get("max_records", 1000))
+        inner = _build_sink(cfg["sink"])
+        return DedupSink(inner, ttl=cfg.get("ttl", 60), fields=cfg.get("fields"))
 
     if kind == "schema":
         from logpipe.sinks.schema_sink import SchemaSink
-        raw_fields = cfg.get("required_fields", {})
-        _type_map = {"str": str, "int": int, "float": float, "bool": bool, "any": None}
-        required_fields = {
-            k: _type_map.get(v, None) if isinstance(v, str) else v
-            for k, v in raw_fields.items()
-        }
-        return SchemaSink(
-            _build_sink(cfg["sink"]),
-            required_fields=required_fields,
-            on_error=cfg.get("on_error", "drop"),
-        )
+        inner = _build_sink(cfg["sink"])
+        return SchemaSink(inner, schema=cfg["schema"])
+
+    if kind == "metrics":
+        from logpipe.sinks.metrics_sink import MetricsSink
+        from logpipe.metrics import MetricsCollector
+        inner = _build_sink(cfg["sink"])
+        mc = MetricsCollector()
+        return MetricsSink(inner, mc)
+
+    if kind == "throttled":
+        from logpipe.sinks.throttled_sink import ThrottledSink
+        inner = _build_sink(cfg["sink"])
+        return ThrottledSink(inner, rate=cfg["rate"], capacity=cfg.get("capacity"))
+
+    if kind == "rotating":
+        from logpipe.sinks.rotating_sink import RotatingSink
+        inner_factory = lambda: _build_sink(cfg["sink"])  # noqa: E731
+        return RotatingSink(inner_factory, max_records=cfg.get("max_records", 1000))
 
     raise ValueError(f"Unknown sink type: {kind!r}")
 
 
-def _build_parser(cfg: Dict[str, Any]):
+# ---------------------------------------------------------------------------
+# Parser builders
+# ---------------------------------------------------------------------------
+
+def _build_parser(cfg: dict[str, Any]):
     kind = cfg.get("type", "json")
+
     if kind == "json":
-        return JSONParser(field_map=cfg.get("field_map", {}), drop_raw=cfg.get("drop_raw", False))
+        from logpipe.parser import JSONParser
+        return JSONParser(
+            timestamp_field=cfg.get("timestamp_field", "timestamp"),
+            level_field=cfg.get("level_field", "level"),
+        )
+
+    if kind == "logfmt":
+        from logpipe.parser import LogfmtParser  # type: ignore[attr-defined]
+        return LogfmtParser()
+
     if kind == "regex":
-        return RegexParser(pattern=cfg["pattern"], field_map=cfg.get("field_map", {}))
-    if kind == "plain":
-        return PlainParser(message_field=cfg.get("message_field", "message"))
+        from logpipe.parser import RegexParser  # type: ignore[attr-defined]
+        return RegexParser(pattern=cfg["pattern"], fields=cfg["fields"])
+
     raise ValueError(f"Unknown parser type: {kind!r}")
 
 
-def build_pipeline(cfg: Dict[str, Any]) -> Pipeline:
-    """Build and return a :class:`~logpipe.pipeline.Pipeline` from *cfg*."""
-    checkpoint_path = cfg.get("checkpoint_path", "/tmp/logpipe_checkpoints.json")
+# ---------------------------------------------------------------------------
+# Top-level pipeline builder
+# ---------------------------------------------------------------------------
+
+def build_pipeline(cfg: dict[str, Any]) -> Pipeline:
+    """Construct a :class:`Pipeline` from a configuration mapping."""
+    checkpoint_path = cfg.get("checkpoint_path", "/tmp/logpipe_checkpoint.json")
     checkpoint = CheckpointManager(checkpoint_path)
 
+    parser = _build_parser(cfg.get("parser", {}))
+    sink = _build_sink(cfg["sink"])
+
+    routes = [
+        Route(
+            field=r["field"],
+            op=r["op"],
+            value=r.get("value"),
+            sink=_build_sink(r["sink"]),
+        )
+        for r in cfg.get("routes", [])
+    ]
+    router = Router(routes=routes, default_sink=sink)
+
     tailers = [
-        FileTailer(src["path"], checkpoint)
-        for src in cfg.get("sources", [])
+        FileTailer(path=src["path"], checkpoint=checkpoint)
+        for src in cfg["sources"]
     ]
 
-    routes = []
-    for route_cfg in cfg.get("routes", []):
-        parser = _build_parser(route_cfg.get("parser", {}))
-        sink = _build_sink(route_cfg["sink"])
-        match = route_cfg.get("match", {})
-        routes.append(Route(parser=parser, sink=sink, match=match))
-
-    router = Router(routes)
-    return Pipeline(tailers=tailers, router=router, checkpoint=checkpoint)
+    return Pipeline(
+        tailers=tailers,
+        parser=parser,
+        router=router,
+        checkpoint=checkpoint,
+        flush_interval=cfg.get("flush_interval", 5),
+    )
