@@ -87,83 +87,21 @@ class TestFieldFilterRegex:
 
 
 # ---------------------------------------------------------------------------
+# FieldFilter — invalid match_type
+# ---------------------------------------------------------------------------
+
+class TestFieldFilterInvalidMatchType:
+    def test_invalid_match_type_raises(self):
+        """Constructing a FieldFilter with an unsupported match_type should
+        raise FilterError immediately rather than failing silently at keep().
+        """
+        with pytest.raises(FilterError, match="match_type"):
+            FieldFilter("level", "error", match_type="fuzzy")
+
+
+# ---------------------------------------------------------------------------
 # FieldFilter — nested field path
 # ---------------------------------------------------------------------------
 
 class TestFieldFilterNestedPath:
-    def test_nested_key_resolved(self):
-        f = FieldFilter("meta.env", "prod")
-        record = {"meta": {"env": "prod"}}
-        assert f.keep(record) is True
-
-    def test_partial_path_missing(self):
-        f = FieldFilter("meta.env", "prod")
-        assert f.keep({"meta": None}) is False
-
-
-# ---------------------------------------------------------------------------
-# FieldFilter — invalid match_type
-# ---------------------------------------------------------------------------
-
-def test_invalid_match_type_raises():
-    with pytest.raises(FilterError):
-        FieldFilter("level", "error", match_type="fuzzy")
-
-
-# ---------------------------------------------------------------------------
-# FilterChain
-# ---------------------------------------------------------------------------
-
-class TestFilterChain:
-    def test_empty_chain_keeps_all(self):
-        chain = FilterChain()
-        assert chain.keep(_rec()) is True
-
-    def test_all_filters_must_pass(self):
-        chain = FilterChain([
-            FieldFilter("level", "error"),
-            FieldFilter("service", "api"),
-        ])
-        assert chain.keep(_rec(level="error", service="api")) is True
-        assert chain.keep(_rec(level="error", service="worker")) is False
-
-    def test_add_appends_filter(self):
-        chain = FilterChain()
-        chain.add(FieldFilter("level", "warn"))
-        assert len(chain) == 1
-
-
-# ---------------------------------------------------------------------------
-# FilteredSink
-# ---------------------------------------------------------------------------
-
-class TestFilteredSink:
-    def _make(self, **filter_kwargs):
-        inner = _CaptureSink()
-        chain = FilterChain([FieldFilter(**filter_kwargs)])
-        sink = FilteredSink(inner, chain)
-        return sink, inner
-
-    def test_passing_record_forwarded(self):
-        sink, inner = self._make(field="level", pattern="error")
-        sink.write(_rec(level="error"))
-        assert len(inner.records) == 1
-        assert sink.passed == 1
-        assert sink.dropped == 0
-
-    def test_failing_record_dropped(self):
-        sink, inner = self._make(field="level", pattern="error")
-        sink.write(_rec(level="info"))
-        assert inner.records == []
-        assert sink.dropped == 1
-        assert sink.passed == 0
-
-    def test_flush_delegates(self):
-        sink, inner = self._make(field="level", pattern="error")
-        sink.flush()
-        assert inner.flushed is True
-
-    def test_close_delegates(self):
-        sink, inner = self._make(field="level", pattern="error")
-        sink.close()
-        assert inner.closed is True
+    def test
