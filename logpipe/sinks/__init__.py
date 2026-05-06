@@ -2,49 +2,54 @@
 
 from __future__ import annotations
 
-from typing import Dict, Type
+from abc import ABC, abstractmethod
+from typing import Any, Dict, Optional, Type
 
-_REGISTRY: Dict[str, Type["BaseSink"]] = {}
+
+class BaseSink(ABC):
+    """Abstract base class that every sink must implement."""
+
+    @abstractmethod
+    def write(self, record: Dict[str, Any]) -> None:
+        """Accept a single parsed log record."""
+
+    @abstractmethod
+    def flush(self) -> None:
+        """Flush any internally buffered records to the underlying target."""
+
+    @abstractmethod
+    def close(self) -> None:
+        """Flush and release any resources held by this sink."""
 
 
-class BaseSink:
-    """Abstract base class for all logpipe sinks."""
+# ---------------------------------------------------------------------------
+# Sink registry
+# ---------------------------------------------------------------------------
 
-    def write(self, record: dict) -> None:  # pragma: no cover
-        raise NotImplementedError
-
-    def flush(self) -> None:  # pragma: no cover
-        raise NotImplementedError
-
-    def close(self) -> None:  # pragma: no cover
-        raise NotImplementedError
+_REGISTRY: Dict[str, Type[BaseSink]] = {}
 
 
 def register(name: str, cls: Type[BaseSink]) -> None:
-    """Register a sink class under *name* for use in builder configuration."""
+    """Register *cls* under *name* so builder.py can look it up by string."""
+    if not issubclass(cls, BaseSink):
+        raise TypeError(f"{cls!r} must be a subclass of BaseSink")
     _REGISTRY[name] = cls
 
 
-def get_sink_class(name: str) -> Type[BaseSink]:
+def lookup(name: str) -> Type[BaseSink]:
     """Return the sink class registered under *name*.
 
-    Raises :class:`KeyError` if *name* is unknown.
+    Raises
+    ------
+    KeyError
+        If no sink has been registered with that name.
     """
     try:
         return _REGISTRY[name]
     except KeyError:
-        raise KeyError(f"No sink registered under name '{name}'")
+        raise KeyError(f"No sink registered under {name!r}") from None
 
 
-# Register built-in sinks so they are discoverable via builder.
-def _register_builtins() -> None:
-    from logpipe.sinks.s3_sink import S3Sink
-    from logpipe.sinks.es_sink import ElasticsearchSink
-    from logpipe.sinks.rate_limit_sink import RateLimitSink
-
-    register("s3", S3Sink)
-    register("elasticsearch", ElasticsearchSink)
-    register("rate_limit", RateLimitSink)
-
-
-_register_builtins()
+def registered_names() -> list:
+    """Return a sorted list of all registered sink names."""
+    return sorted(_REGISTRY.keys())
