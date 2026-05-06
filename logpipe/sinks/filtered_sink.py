@@ -38,8 +38,23 @@ class FilteredSink(BaseSink):
 
     @property
     def passed(self) -> int:
+        """Number of records forwarded to the inner sink."""
         return self._passed
 
     @property
     def dropped(self) -> int:
+        """Number of records dropped by the filter chain."""
         return self._dropped
+
+    @property
+    def total(self) -> int:
+        """Total number of records seen (passed + dropped)."""
+        return self._passed + self._dropped
+
+    def stats(self) -> Dict[str, int]:
+        """Return a snapshot of pass/drop/total counts as a dictionary."""
+        return {
+            "passed": self._passed,
+            "dropped": self._dropped,
+            "total": self.total,
+        }
